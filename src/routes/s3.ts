@@ -41,22 +41,6 @@ const s3Schema = {
         enum: GS_QUALITIES,
       }
     }
-  },
-  consumes: ['multipart/form-data'],
-  body: {
-    type: 'object',
-    properties: {
-      file: {
-        type: 'object'
-      },
-      source: {
-        type: 'string'
-      },
-      destination: {
-        type: 'string'
-      }
-    },
-    required: ['destination']
   }
 }
 
@@ -85,38 +69,48 @@ export default (app: FastifyInstance) => {
       else
         fields[part.fieldname] = part.value as string || null
     }
+    if(!fields.destination)
+      return reply.code(400).send({ error: 'Missing destination' })
 
+    if(!workerPool.acquire()) {
+      return reply.code(503).send({ error: 'Server is busy, please try again later' })
+    }
+
+    let sourceFile: string;
     if(!sourceStream) {
       if(!fields.source)
         return reply.code(400).send({ error: 'Missing source or file' })
 
+      reply.code(202).header('Trace', trace).send({ trace })
+
       sourceStream = await fetchStreamS3(fields.source!)
-    }
 
-    if(!sourceStream)
-      return reply.code(400).send({ error: 'Unable to load file' })
+      if(!sourceStream)
+        return stringWebhookRequest('Failed to fetch file', callbackError, { [headers.trace]: trace })
 
-    const { sourceFile } = (await cacheUpload(trace, sourceStream)) || {}
+      const { sourceFile: srcFile } = (await cacheUpload(trace, sourceStream)) || {}
+      if(!srcFile)
+        return stringWebhookRequest('Internal server error', callbackError, { [headers.trace]: trace })
 
-    if(!sourceFile)
-      return reply.code(400).send({ error: 'No file provided' })
+      sourceFile = srcFile
+    } else {
+      const { sourceFile: srcFile } = (await cacheUpload(trace, sourceStream)) || {}
 
+      if(!srcFile)
+        return reply.code(400).send({ error: 'No file provided' })
 
-    if(!workerPool.acquire()) {
-      cleanup(sourceFile)
-      return reply.code(503).send({ error: 'Server is busy, please try again later' })
+      sourceFile = srcFile
+      reply.code(202).header('Trace', trace).send({ trace })
     }
 
     newTask({
       sourceFile,
       quality,
       callbackSuccess,
-      destination: fields.destination!,
+      destination: fields.destination,
       callbackError,
       trace
     }, app.log)
-
-    return reply.code(202).header('Trace', trace).send({ trace })
   })
 }
 
@@ -152,9 +146,11 @@ const newTask = async (input: TaskParams, log: FastifyBaseLogger) => {
   } catch(err: any) {
     log.error({ trace, err }, 'Task failed')
 
-    if(typeof err === 'object' && 'code' in err) {
+    if(typeof err === 'object' && 'code' in err)
       await stringWebhookRequest((err as GSError).code.toString(), callbackError, { [headers.trace]: trace })
-    }
+    else
+      await stringWebhookRequest('Internal server error', callbackError, { [headers.trace]: trace })
+
   }
 
   if(resultFile)

@@ -4,12 +4,17 @@ import { request } from "node:http"
 import { Readable } from "node:stream"
 
 export const fetchStreamS3 = async (url: string): Promise<Readable | null> => {
-  const res = await fetch(url, { method: 'GET' })
-  if(!res.ok || !res.body) {
+  try {
+    const res = await fetch(url, { method: 'GET' })
+    if(!res.ok || !res.body) {
+      return null
+    }
+
+    return Readable.fromWeb(res.body as any)
+  } catch(err) {
+    console.error(err)
     return null
   }
-
-  return Readable.fromWeb(res.body as any)
 }
 
 export const uploadToS3 = (destination: string, resultFile: string) => new Promise<void>(async (resolve, reject) => {
