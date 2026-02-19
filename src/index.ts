@@ -21,7 +21,7 @@ await app.register(multipart, {
   }
 })
 
-if(process.env.JWT_ENABLE) {
+if(process.env.JWT_ENABLE === 'true') {
   const publicKey = readFile(path.resolve(config.certs, 'public.key'))
   const privateKey = readFile(path.resolve(config.certs, 'private.key'))
 
