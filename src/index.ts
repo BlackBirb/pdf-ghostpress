@@ -5,9 +5,7 @@ import { config } from "./config.js"
 import inlineRoutes from "./routes/inline.js"
 import webhookRoutes from "./routes/webhook.js"
 import s3Routes from "./routes/s3.js"
-import jwt from "@fastify/jwt"
-import { readFile } from "fs/promises"
-import path from "path"
+import { addJWTRoutes, initJWT } from "./jwt.js"
 
 const app = Fastify({
   logger: true,
@@ -22,17 +20,7 @@ await app.register(multipart, {
 })
 
 if(config.useJWT) {
-  const publicKey = readFile(path.resolve(config.certs, 'public.key'))
-  const privateKey = readFile(path.resolve(config.certs, 'private.key'))
-
-  app.log.info("Enabling JWT authorization")
-  await app.register(jwt, {
-    secret: {
-      public: await publicKey
-    },
-    sign: { algorithm: 'RS256' },
-    verify: { algorithms: ['RS256'] }
-  })
+  await initJWT(app)
 }
 
 // Init
@@ -53,15 +41,7 @@ app.get('/health', async (request, reply) => {
 
 app.register((router) => {
   if(config.useJWT)
-    router.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        await request.jwtVerify()
-        if(!request.user)
-          reply.code(403).send("Invalid token")
-      } catch (err) {
-        reply.send(err)
-      }
-    })
+    addJWTRoutes(router)
 
   router.register(inlineRoutes)
   router.register(webhookRoutes)
