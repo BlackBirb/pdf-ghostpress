@@ -4,7 +4,6 @@ import { GS_QUALITIES, runCompression, type GSError, type GSQuality } from "./gs
 import { createReadStream, createWriteStream } from "fs"
 import { pipeline } from "stream/promises"
 import { stat } from "fs/promises"
-import { request } from "http"
 import { getSourceFile, headers } from "./config.js"
 import { mediaWebhookRequest, stringWebhookRequest } from "./webhook.js"
 
@@ -44,13 +43,13 @@ const newTask = async (input: TaskParams) => {
     const { result } = await runCompression(sourceFile, quality)
     resultFile = result
 
-    await mediaWebhookRequest(resultFile, callbackSuccess, { "Trace": trace })
+    await mediaWebhookRequest(resultFile, callbackSuccess, { [headers.trace]: trace })
     app.log.info({ trace, done: true }, 'Task success')
   } catch(err: any) {
     app.log.error({ trace, err }, 'Task failed')
 
     if(typeof err === 'object' && 'code' in err) {
-      await stringWebhookRequest((err as GSError).code.toString(), callbackError, { "Trace": trace })
+      await stringWebhookRequest((err as GSError).code.toString(), callbackError, { [headers.trace]: trace })
     }
   }
 
