@@ -1,5 +1,5 @@
 import { mkdir, stat, unlink } from "fs/promises"
-import { config } from "./config.js"
+import { config } from "../config.js"
 
 type SnowflakeOptions = {
   epoch?: number
@@ -22,7 +22,7 @@ const snowflake = (idx: number, options: Required<SnowflakeOptions>) => {
   return bin2hex('0' + time.toString(2).padStart(41, '0') + right.toString(2).padStart(22, '0'))
 }
 
-export const useSnowflake = (options: SnowflakeOptions = {}) => {
+const snowflakeFactory = (options: SnowflakeOptions = {}) => {
   const {
     epoch = (new Date('2026-01-01T00:00:00.000Z')).getTime(),
     worker = 1,
@@ -44,6 +44,8 @@ export const useSnowflake = (options: SnowflakeOptions = {}) => {
     return snowflake(seq, defaultedOptions)
   }
 }
+
+export const useSnowflake = snowflakeFactory()
 
 
 export const cleanup = (filename: string) => {

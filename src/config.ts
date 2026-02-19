@@ -1,5 +1,4 @@
 import path from "node:path";
-import { ensureDir } from "./utils.js";
 import crypto from 'node:crypto'
 
 export const headers = {
