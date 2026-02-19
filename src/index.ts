@@ -29,6 +29,8 @@ if(process.env.JWT_ENABLE) {
   const publicKey = readFile(path.resolve(config.certs, 'public.key'))
   const privateKey = readFile(path.resolve(config.certs, 'private.key'))
 
+  const syncSigner = createSigner({ key: await privateKey })
+  app.log.info({ rootToken: syncSigner({ root: true }) }, "Enabling JWT authorization")
   await app.register(jwt, {
     secret: {
       public: await publicKey

@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsup src/index.ts --env.NODE_ENV production --format esm --sourcemap --clean",
+    "build": "tsup",
     "start": "node dist/index.js",
     "prod": "docker build --build-arg PORT=3000 -t blackbird/ghostscript:0.1.0 -t blackbird/ghostscript:latest ./",
     "typecheck": "tsc --noEmit"
