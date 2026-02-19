@@ -1,17 +1,13 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify"
 import multipart from '@fastify/multipart'
-import { cleanup, ensureDir, workerPool } from "./utils/index.js"
-import { GS_QUALITIES, runCompression, type GSError, type GSQuality } from "./gs.js"
-import { pipeline } from "stream/promises"
-import { config, getSourceFileName, headers } from "./config.js"
-import { mediaWebhookRequest, stringWebhookRequest } from "./webhook.js"
+import { ensureDir } from "./utils/index.js"
+import { config } from "./config.js"
 import inlineRoutes from "./routes/inline.js"
 import webhookRoutes from "./routes/webhook.js"
 import s3Routes from "./routes/s3.js"
 import jwt from "@fastify/jwt"
 import { readFile } from "fs/promises"
 import path from "path"
-import { createSigner } from 'fast-jwt'
 
 const app = Fastify({
   logger: true,
@@ -29,8 +25,7 @@ if(process.env.JWT_ENABLE) {
   const publicKey = readFile(path.resolve(config.certs, 'public.key'))
   const privateKey = readFile(path.resolve(config.certs, 'private.key'))
 
-  const syncSigner = createSigner({ key: await privateKey })
-  app.log.info({ rootToken: syncSigner({ root: true }) }, "Enabling JWT authorization")
+  app.log.info("Enabling JWT authorization")
   await app.register(jwt, {
     secret: {
       public: await publicKey
