@@ -21,7 +21,7 @@ await app.register(multipart, {
   }
 })
 
-if(process.env.JWT_ENABLE === 'true') {
+if(config.useJWT) {
   const publicKey = readFile(path.resolve(config.certs, 'public.key'))
   const privateKey = readFile(path.resolve(config.certs, 'private.key'))
 
@@ -52,7 +52,7 @@ app.get('/health', async (request, reply) => {
 
 
 app.register((router) => {
-  if(process.env.JWT_ENABLE)
+  if(config.useJWT)
     router.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         await request.jwtVerify()
