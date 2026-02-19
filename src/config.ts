@@ -10,7 +10,7 @@ export const headers = {
 export const config = {
   uploads: path.resolve('/', 'tmp', 'gs', 'uploads'),
   certs: process.env.NODE_ENV === 'production'
-    ? path.resolve('srv', 'certs')
+    ? path.resolve('/', 'srv', 'certs')
     : path.resolve('.', 'certs'),
   maxWorkers: parseInt(process.env.WORKERS || '10') || 10
 } as const
