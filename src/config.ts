@@ -1,5 +1,6 @@
 import path from "node:path";
 import { ensureDir } from "./utils.js";
+import crypto from 'node:crypto'
 
 export const headers = {
   replyTo: 'ghostscript-reply-to',
@@ -12,7 +13,4 @@ export const config = {
   maxWorkers: parseInt(process.env.WORKERS || '10') || 10
 } as const
 
-export const getSourceFile = (trace: string) => path.resolve(config.uploads, `body-${trace}.bin`)
-
-// Yeah it just runs on process start, fight me
-ensureDir(config.uploads)
+export const getSourceFileName = (trace: string) => path.resolve(config.uploads, `body-${trace}-${crypto.randomBytes(16).toString('hex')}.bin`)

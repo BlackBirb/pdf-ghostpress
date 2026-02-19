@@ -1,10 +1,11 @@
 import Fastify from "fastify"
-import { cleanup, useSnowflake, workerPool } from "./utils.js"
+import multipart from '@fastify/multipart'
+import { cleanup, ensureDir, useSnowflake, workerPool } from "./utils.js"
 import { GS_QUALITIES, runCompression, type GSError, type GSQuality } from "./gs.js"
 import { createReadStream, createWriteStream } from "fs"
 import { pipeline } from "stream/promises"
 import { stat } from "fs/promises"
-import { getSourceFile, headers } from "./config.js"
+import { config, getSourceFileName, headers } from "./config.js"
 import { mediaWebhookRequest, stringWebhookRequest } from "./webhook.js"
 
 const getSnowflake = useSnowflake()
@@ -12,6 +13,18 @@ const getSnowflake = useSnowflake()
 const app = Fastify({
   logger: true,
   trustProxy: true
+})
+
+await app.register(multipart, {
+  limits: {
+    files: 1,
+    fileSize: 256 * 1024 * 1024,
+  }
+})
+
+// Init
+app.register((app) => {
+  ensureDir(config.uploads)
 })
 
 app.addContentTypeParser(
@@ -60,6 +73,43 @@ const newTask = async (input: TaskParams) => {
   workerPool.release()
 }
 
+const readSourceFile = async (trace: string, request: Fastify.FastifyRequest) => {
+  const contentType = request.headers['content-type']
+  const sourceFile = getSourceFileName(trace)
+
+  const tmpStream = createWriteStream(sourceFile)
+
+  let sourceStream = null
+  if(contentType === 'application/pdf') {
+    sourceStream = request.raw
+  } else {
+    sourceStream = (await request.file())?.file
+    console.log(sourceStream)
+  }
+
+  if(!sourceStream) {
+    return null
+  }
+
+  sourceStream.on('aborted', () => {
+    if(!tmpStream.closed)
+      tmpStream.close()
+    cleanup(sourceFile)
+  })
+
+  try {
+    await pipeline(sourceStream, tmpStream)
+
+    return {
+      sourceFile
+    }
+  } catch(err) {
+    cleanup(sourceFile)
+
+    return null
+  }
+}
+
 type QueryParams = {
   quality: GSQuality | null
 }
@@ -68,6 +118,7 @@ type WebhookHeaders = {
   [headers.replyTo]: string
   [headers.reportTo]: string
   [headers.trace]?: string
+  ['content-type']: string
 }
 
 const webhookSchema = {
@@ -76,9 +127,16 @@ const webhookSchema = {
     properties: {
       [headers.replyTo]: { type: 'string' },
       [headers.reportTo]: { type: 'string' },
-      [headers.trace]: { type: 'string' }
+      [headers.trace]: { type: 'string' },
+      ['content-type']: {
+        type: 'string',
+        anyOf: [
+          { const: 'application/pdf' },
+          { pattern: '^multipart/form-data' }
+        ]
+      }
     },
-    required: [headers.replyTo, headers.reportTo]
+    required: [headers.replyTo, headers.reportTo, 'content-type']
   },
   querystring: {
     type: 'object',
@@ -104,17 +162,12 @@ app.post<{ Querystring: QueryParams, Headers: WebhookHeaders }>('/process/webhoo
   const callbackError = request.headers[headers.reportTo]
 
   const trace = request.headers[headers.trace] || getSnowflake()
-  const sourceFile = getSourceFile(trace)
 
-  const tmpStream = createWriteStream(sourceFile)
+  const { sourceFile } = (await readSourceFile(trace, request)) || {}
 
-  request.raw.on('aborted', () => {
-    if(!tmpStream.closed)
-      tmpStream.close()
-    cleanup(sourceFile)
-  })
-
-  await pipeline(request.raw, tmpStream)
+  if(!sourceFile) {
+    return reply.code(400).send({ error: 'No file provided' })
+  }
 
   if(!workerPool.acquire()) {
     cleanup(sourceFile)
@@ -133,6 +186,19 @@ app.post<{ Querystring: QueryParams, Headers: WebhookHeaders }>('/process/webhoo
 })
 
  const inlineSchema = {
+  headers: {
+    type: 'object',
+    properties: {
+      ['content-type']: {
+        type: 'string',
+        anyOf: [
+          { const: 'application/pdf' },
+          { pattern: '^multipart/form-data' }
+        ]
+      }
+    },
+    required: ['content-type']
+  },
   querystring: {
     type: 'object',
     properties: {
@@ -152,13 +218,15 @@ app.post<{ Querystring: QueryParams }>('/process/inline', { schema: inlineSchema
   const quality = request.query.quality || null
 
   const trace = getSnowflake()
-  const sourceFile = getSourceFile(trace)
 
-  const tmpStream = createWriteStream(sourceFile)
+  const { sourceFile } = (await readSourceFile(trace, request)) || {}
+
+  if(!sourceFile) {
+    return reply.code(400).send({ error: 'No file provided' })
+  }
 
   let resultFile: string | null = null
   try {
-    await pipeline(request.raw, tmpStream)
 
     if(!workerPool.acquire()) {
       cleanup(sourceFile)
