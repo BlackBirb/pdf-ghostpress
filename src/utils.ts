@@ -1,4 +1,5 @@
 import { mkdir, stat, unlink } from "fs/promises"
+import { config } from "./config.js"
 
 type SnowflakeOptions = {
   epoch?: number
@@ -58,3 +59,32 @@ export const ensureDir = async (dir: string) => {
     })
   }
 }
+
+class WorkerPool {
+  #current = 0
+  readonly #max: number
+
+  constructor(max: number) {
+    this.#max = max
+  }
+
+  get current() {
+    return this.#current
+  }
+
+  available() {
+    return this.#current < this.#max
+  }
+
+  acquire() {
+    if(!this.available()) return false
+    this.#current++
+    return true
+  }
+
+  release() {
+    if(this.#current > 0) this.#current--
+  }
+}
+
+export const workerPool = new WorkerPool(config.maxWorkers)

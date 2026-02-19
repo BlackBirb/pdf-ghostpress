@@ -1,22 +1,13 @@
 import Fastify from "fastify"
-import { cleanup, ensureDir, useSnowflake } from "./utils.js"
+import { cleanup, useSnowflake, workerPool } from "./utils.js"
 import { GS_QUALITIES, runCompression, type GSError, type GSQuality } from "./gs.js"
 import { createReadStream, createWriteStream } from "fs"
-import path from "path"
 import { pipeline } from "stream/promises"
 import { stat } from "fs/promises"
 import { request } from "http"
-
-const replyToHeader = 'ghostscript-reply-to' as const
-const reportToHeader = 'ghostscript-report-to' as const
-const traceHeader = 'trace' as const
+import { getSourceFile, headers } from "./config.js"
 
 const getSnowflake = useSnowflake()
-const tmpUploads = path.resolve('/', 'tmp', 'gs', 'uploads')
-ensureDir(tmpUploads)
-
-let currentWorkers = 0
-const maxWorkers = parseInt(process.env.WORKERS || '10') || 10
 
 const app = Fastify({
   logger: true,
@@ -66,7 +57,7 @@ const newTask = async (input: TaskParams) => {
     cleanup(resultFile)
 
   cleanup(sourceFile)
-  currentWorkers--
+  workerPool.release()
 }
 
 type QueryParams = {
@@ -74,34 +65,34 @@ type QueryParams = {
 }
 
 type WebhookHeaders = {
-  [replyToHeader]: string
-  [reportToHeader]: string
-  [traceHeader]?: string
+  [headers.replyTo]: string
+  [headers.reportTo]: string
+  [headers.trace]?: string
 }
 
-app.post<{ Querystring: QueryParams, Headers: WebhookHeaders }>('/process/webhook', {
-  schema: {
-    headers: {
-      type: 'object',
-      properties: {
-        [replyToHeader]: { type: 'string' },
-        [reportToHeader]: { type: 'string' },
-        [traceHeader]: { type: 'string' }
-      },
-      required: [replyToHeader, reportToHeader]
+const webhookSchema = {
+  headers: {
+    type: 'object',
+    properties: {
+      [headers.replyTo]: { type: 'string' },
+      [headers.reportTo]: { type: 'string' },
+      [headers.trace]: { type: 'string' }
     },
-    querystring: {
-      type: 'object',
-      properties: {
-        quality: {
-          type: 'string',
-          enum: GS_QUALITIES,
-        }
+    required: [headers.replyTo, headers.reportTo]
+  },
+  querystring: {
+    type: 'object',
+    properties: {
+      quality: {
+        type: 'string',
+        enum: GS_QUALITIES,
       }
     }
   }
-}, async (request, reply) => {
-  if(currentWorkers >= maxWorkers) {
+}
+
+app.post<{ Querystring: QueryParams, Headers: WebhookHeaders }>('/process/webhook', { schema: webhookSchema }, async (request, reply) => {
+  if(!workerPool.available()) {
     return reply.code(503).send({ error: 'Server is busy, please try again later' })
   }
 
@@ -109,11 +100,11 @@ app.post<{ Querystring: QueryParams, Headers: WebhookHeaders }>('/process/webhoo
 
   // Reply-To - Success
   // Report-to - Error
-  const callbackSuccess = request.headers[replyToHeader]
-  const callbackError = request.headers[reportToHeader]
+  const callbackSuccess = request.headers[headers.replyTo]
+  const callbackError = request.headers[headers.reportTo]
 
-  const trace = request.headers[traceHeader] || getSnowflake()
-  const sourceFile = path.resolve(tmpUploads, `body-${trace}.bin`)
+  const trace = request.headers[headers.trace] || getSnowflake()
+  const sourceFile = getSourceFile(trace)
 
   const tmpStream = createWriteStream(sourceFile)
 
@@ -125,7 +116,11 @@ app.post<{ Querystring: QueryParams, Headers: WebhookHeaders }>('/process/webhoo
 
   await pipeline(request.raw, tmpStream)
 
-  currentWorkers++
+  if(!workerPool.acquire()) {
+    cleanup(sourceFile)
+    return reply.code(503).send({ error: 'Server is busy, please try again later' })
+  }
+
   newTask({
     sourceFile,
     quality,
@@ -137,27 +132,27 @@ app.post<{ Querystring: QueryParams, Headers: WebhookHeaders }>('/process/webhoo
   return reply.code(202).header('Trace', trace).send({ trace })
 })
 
-app.post<{ Querystring: QueryParams }>('/process/inline', {
-  schema: {
-    querystring: {
-      type: 'object',
-      properties: {
-        quality: {
-          type: 'string',
-          enum: GS_QUALITIES,
-        }
+ const inlineSchema = {
+  querystring: {
+    type: 'object',
+    properties: {
+      quality: {
+        type: 'string',
+        enum: GS_QUALITIES,
       }
     }
   }
-}, async (request, reply) => {
-  if(currentWorkers >= maxWorkers) {
+}
+
+app.post<{ Querystring: QueryParams }>('/process/inline', { schema: inlineSchema }, async (request, reply) => {
+  if(!workerPool.available()) {
     return reply.code(503).send({ error: 'Server is busy, please try again later' })
   }
 
   const quality = request.query.quality || null
 
   const trace = getSnowflake()
-  const sourceFile = path.resolve(tmpUploads, `body-${trace}.bin`)
+  const sourceFile = getSourceFile(trace)
 
   const tmpStream = createWriteStream(sourceFile)
 
@@ -165,7 +160,10 @@ app.post<{ Querystring: QueryParams }>('/process/inline', {
   try {
     await pipeline(request.raw, tmpStream)
 
-    currentWorkers++
+    if(!workerPool.acquire()) {
+      cleanup(sourceFile)
+      return reply.code(503).send({ error: 'Server is busy, please try again later' })
+    }
     const { result } = await runCompression(sourceFile, quality)
     resultFile = result
 
@@ -188,7 +186,7 @@ app.post<{ Querystring: QueryParams }>('/process/inline', {
     cleanup(resultFile)
 
   cleanup(sourceFile)
-  currentWorkers--
+  workerPool.release()
 })
 
 app.get('/health', async (request, reply) => {
@@ -201,6 +199,8 @@ app.listen({
 })
 
 // why is it so complex wth
+// Need to watch if server just hangs the connection forever
+// and in that case destry it and release the worker
 const callSuccessWebhook = async (filename: string, url: string, trace: string) => new Promise<void>(async (resolve, reject) => {
   const stats = await stat(filename)
   const readStream = createReadStream(filename)
@@ -223,7 +223,7 @@ const callSuccessWebhook = async (filename: string, url: string, trace: string) 
       if(diff < 10_000)
         return updateTimeout()
       req.destroy()
-      reject("SuccWebhook: Socket timeout")
+      reject("SuccessWebhook: Socket timeout")
     }, 3334)
   }
   updateTimeout()
@@ -232,7 +232,7 @@ const callSuccessWebhook = async (filename: string, url: string, trace: string) 
 
   readStream.on('error', () => {
     req.destroy()
-    reject('SuccWebhook: File read error')
+    reject('SuccessWebhook: File read error')
   })
   readStream.on('data', () => {
     lastRead = Date.now()
@@ -247,7 +247,7 @@ const callSuccessWebhook = async (filename: string, url: string, trace: string) 
     resolve()
   })
   req.on('error', reqError => {
-    reject("SuccWebhook: Request error: " + reqError.name)
+    reject("SuccessWebhook: Request error: " + reqError.name)
   })
 })
 
