@@ -63,13 +63,16 @@ export default (app: FastifyInstance) => {
 
       const stats = await stat(result)
 
-      reply.header('Trace', trace)
-      reply.header('Content-Type', 'application/pdf')
-      reply.header('Content-Size', stats.size.toString())
-
       const resultStream = createReadStream(result)
 
-      await pipeline(resultStream, reply.raw)
+      reply
+        .header('Access-Control-Allow-Origin', "*")
+        .header('Trace', trace)
+        .header('Content-Type', 'application/pdf')
+        .header('Content-Size', stats.size.toString())
+
+      await reply.send(resultStream)
+
     } catch(err) {
       console.log("err")
       reply.header('Trace', trace)
