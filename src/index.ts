@@ -6,6 +6,7 @@ import { pipeline } from "stream/promises"
 import { stat } from "fs/promises"
 import { request } from "http"
 import { getSourceFile, headers } from "./config.js"
+import { mediaWebhookRequest, stringWebhookRequest } from "./webhook.js"
 
 const getSnowflake = useSnowflake()
 
@@ -43,13 +44,13 @@ const newTask = async (input: TaskParams) => {
     const { result } = await runCompression(sourceFile, quality)
     resultFile = result
 
-    await callSuccessWebhook(resultFile, callbackSuccess, trace)
+    await mediaWebhookRequest(resultFile, callbackSuccess, { "Trace": trace })
     app.log.info({ trace, done: true }, 'Task success')
   } catch(err: any) {
     app.log.error({ trace, err }, 'Task failed')
 
     if(typeof err === 'object' && 'code' in err) {
-      await callErrorWebhook((err as GSError).code.toString(16), callbackError, trace)
+      await stringWebhookRequest((err as GSError).code.toString(), callbackError, { "Trace": trace })
     }
   }
 
@@ -197,72 +198,3 @@ app.listen({
   host: '0.0.0.0',
   port: parseInt(process.env.PORT!) || 3416
 })
-
-// why is it so complex wth
-// Need to watch if server just hangs the connection forever
-// and in that case destry it and release the worker
-const callSuccessWebhook = async (filename: string, url: string, trace: string) => new Promise<void>(async (resolve, reject) => {
-  const stats = await stat(filename)
-  const readStream = createReadStream(filename)
-
-  const req = request(url, {
-    method: 'POST',
-    headers: {
-      "Content-length": stats.size.toString(),
-      "content-type": 'application/pdf',
-      "Trace": trace
-    },
-  })
-
-  let lastRead = Date.now()
-  let timeout: NodeJS.Timeout;
-  const updateTimeout = () => {
-    clearTimeout(timeout)
-    timeout = setTimeout(() => {
-      const diff = Date.now() - lastRead
-      if(diff < 10_000)
-        return updateTimeout()
-      req.destroy()
-      reject("SuccessWebhook: Socket timeout")
-    }, 3334)
-  }
-  updateTimeout()
-
-  readStream.pipe(req)
-
-  readStream.on('error', () => {
-    req.destroy()
-    reject('SuccessWebhook: File read error')
-  })
-  readStream.on('data', () => {
-    lastRead = Date.now()
-  })
-
-  req.on('response', res => {
-    req.destroy()
-    resolve()
-  })
-  req.on('close', () => {
-    clearTimeout(timeout)
-    resolve()
-  })
-  req.on('error', reqError => {
-    reject("SuccessWebhook: Request error: " + reqError.name)
-  })
-})
-
-const callErrorWebhook = async (reason: string, url: string, trace: string) => {
-  try {
-    await fetch(url, {
-      method: 'POST',
-      headers: {
-        "Trace": trace
-      },
-      body: JSON.stringify({
-        error: reason
-      })
-    })
-  } catch(err) {
-    throw "ErrorWebhook: Fetch error: " + ((err as Error)?.message || 'Unknown error')
-  }
-}
