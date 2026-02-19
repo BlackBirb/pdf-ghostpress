@@ -1,12 +1,11 @@
 import Fastify from "fastify"
 import { cleanup, ensureDir, useSnowflake } from "./utils.js"
 import { GS_QUALITIES, runCompression, type GSError, type GSQuality } from "./gs.js"
-import { createReadStream, createWriteStream, read } from "fs"
+import { createReadStream, createWriteStream } from "fs"
 import path from "path"
 import { pipeline } from "stream/promises"
 import { stat } from "fs/promises"
 import { request } from "http"
-import { Writable } from "stream"
 
 const replyToHeader = 'ghostscript-reply-to' as const
 const reportToHeader = 'ghostscript-report-to' as const
@@ -15,6 +14,9 @@ const traceHeader = 'trace' as const
 const getSnowflake = useSnowflake()
 const tmpUploads = path.resolve('/', 'tmp', 'gs', 'uploads')
 ensureDir(tmpUploads)
+
+let currentWorkers = 0
+const maxWorkers = parseInt(process.env.WORKERS || '10') || 10
 
 const app = Fastify({
   logger: true,
@@ -64,6 +66,7 @@ const newTask = async (input: TaskParams) => {
     cleanup(resultFile)
 
   cleanup(sourceFile)
+  currentWorkers--
 }
 
 type QueryParams = {
@@ -98,6 +101,10 @@ app.post<{ Querystring: QueryParams, Headers: WebhookHeaders }>('/process/webhoo
     }
   }
 }, async (request, reply) => {
+  if(currentWorkers >= maxWorkers) {
+    return reply.code(503).send({ error: 'Server is busy, please try again later' })
+  }
+
   const quality = request.query.quality || null
 
   // Reply-To - Success
@@ -118,6 +125,7 @@ app.post<{ Querystring: QueryParams, Headers: WebhookHeaders }>('/process/webhoo
 
   await pipeline(request.raw, tmpStream)
 
+  currentWorkers++
   newTask({
     sourceFile,
     quality,
@@ -142,6 +150,10 @@ app.post<{ Querystring: QueryParams }>('/process/inline', {
     }
   }
 }, async (request, reply) => {
+  if(currentWorkers >= maxWorkers) {
+    return reply.code(503).send({ error: 'Server is busy, please try again later' })
+  }
+
   const quality = request.query.quality || null
 
   const trace = getSnowflake()
@@ -153,6 +165,7 @@ app.post<{ Querystring: QueryParams }>('/process/inline', {
   try {
     await pipeline(request.raw, tmpStream)
 
+    currentWorkers++
     const { result } = await runCompression(sourceFile, quality)
     resultFile = result
 
@@ -171,9 +184,15 @@ app.post<{ Querystring: QueryParams }>('/process/inline', {
     return reply.code(500).send({ error: 'Compression failed' })
   }
 
-  cleanup(sourceFile)
   if(resultFile)
     cleanup(resultFile)
+
+  cleanup(sourceFile)
+  currentWorkers--
+})
+
+app.get('/health', async (request, reply) => {
+  return { status: 'ok' }
 })
 
 app.listen({
@@ -205,7 +224,7 @@ const callSuccessWebhook = async (filename: string, url: string, trace: string) 
         return updateTimeout()
       req.destroy()
       reject("SuccWebhook: Socket timeout")
-    }, 3333)
+    }, 3334)
   }
   updateTimeout()
 
@@ -244,6 +263,6 @@ const callErrorWebhook = async (reason: string, url: string, trace: string) => {
       })
     })
   } catch(err) {
-    throw "ErrorWebhook: Fetch error: " + ((err as Error)?.message || 'idk')
+    throw "ErrorWebhook: Fetch error: " + ((err as Error)?.message || 'Unknown error')
   }
 }
