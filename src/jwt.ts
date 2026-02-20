@@ -6,22 +6,28 @@ import jwt from "@fastify/jwt"
 import { createSigner } from "fast-jwt"
 
 export const initJWT = async (app: FastifyInstance) => {
-  const publicKey = readFile(path.resolve(config.certs, 'public.key'))
-  const privateKey = readFile(path.resolve(config.certs, 'private.key')).catch(() => null)
+  const publicKeyPromise = readFile(path.resolve(config.certs, 'public.key')).catch(() => null)
+  const privateKeyPromise = readFile(path.resolve(config.certs, 'private.key')).catch(() => null)
 
   app.log.info("Enabling JWT authorization")
+  const publicKey = await publicKeyPromise
+  if(!publicKey)
+    return app.log.error("JWT Public token failed to load")
+
   await app.register(jwt, {
     secret: {
-      public: await publicKey
+      public: publicKey
     },
     sign: { algorithm: 'RS256' },
     verify: { algorithms: ['RS256'] }
   })
 
-  const key = await privateKey
-  if(!key) return
+  const privateKey = await privateKeyPromise
+  if(!privateKey) 
+    return
+  
   const signer = createSigner({
-    key
+    key: privateKey
   })
   app.log.info({ token: await signer({ 'iss': "root" }) }, "JWT ROOT TOKEN")
 }

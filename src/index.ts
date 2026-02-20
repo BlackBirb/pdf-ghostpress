@@ -24,8 +24,9 @@ if(config.useJWT) {
 }
 
 // Init
-app.register((app) => {
+await app.register((app) => {
   ensureDir(config.uploads)
+  ensureDir(config.certs)
 })
 
 app.addContentTypeParser(
